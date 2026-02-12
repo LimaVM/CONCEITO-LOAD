@@ -1,0 +1,26 @@
+{
+  "manualRoutes": [],
+  "serverWeights": [
+    [
+      "164.152.63.90:3389",
+      1
+    ],
+    [
+      "129.159.60.191:3389",
+      1
+    ],
+    [
+      "137.131.244.216:49155",
+      1
+    ],
+    [
+      "136.248.106.71:49155",
+      1
+    ]
+  ],
+  "manualAliases": [],
+  "balancingStrategy": "NAME",
+  "blacklistedIPs": [],
+  "blacklistedUsers": [],
+  "isLearningMode": true
+}

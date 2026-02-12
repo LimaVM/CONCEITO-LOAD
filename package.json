@@ -1,0 +1,20 @@
+{
+  "name": "conceito-load-balancer",
+  "version": "1.0.0",
+  "description": "Simple RDP Load Balancer with Sticky Sessions",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "keywords": [
+    "rdp",
+    "load-balancer",
+    "sticky-session",
+    "proxy"
+  ],
+  "author": "Conceito Tecnologia",
+  "license": "ISC",
+  "dependencies": {
+    "dotenv": "^16.4.5"
+  }
+}

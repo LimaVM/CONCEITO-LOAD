@@ -1,0 +1,19 @@
+{
+    "name": "conceitoload-agent",
+    "version": "1.0.0",
+    "description": "ConceitoLoad Agent Reporter - Reports RDP sessions to load balancer",
+    "main": "index.js",
+    "scripts": {
+        "start": "node index.js"
+    },
+    "keywords": [
+        "rdp",
+        "agent",
+        "load-balancer"
+    ],
+    "author": "Conceito Tecnologia",
+    "license": "ISC",
+    "dependencies": {
+        "dotenv": "^16.4.5"
+    }
+}
