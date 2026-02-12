@@ -50,21 +50,6 @@ const normalizeUsername = (value) => {
     return normalized.trim();
 };
 
-const usernamesMatch = (a, b) => {
-    const left = normalizeUsername(a).toLowerCase();
-    const right = normalizeUsername(b).toLowerCase();
-    if (!left || !right) return false;
-    if (left === right) return true;
-
-    const longer = left.length >= right.length ? left : right;
-    const shorter = left.length >= right.length ? right : left;
-
-    // Só aceita match por truncamento quando o prefixo é minimamente confiável.
-    // Evita colidir usuários curtos (ex: "adm") e reduzir falsos positivos.
-    if (shorter.length < 6) return false;
-    return longer.startsWith(shorter);
-};
-
 // === CLUSTERING ===
 if (cluster.isMaster) {
     const numCPUs = os.cpus().length;
@@ -218,7 +203,7 @@ if (cluster.isMaster) {
         }
         else if (msg.type === 'CMD_REGISTER_STICKY') {
             const { user, targetHost, targetPort } = msg;
-            if (user && targetHost && isLearningMode) {
+            if (user && targetHost && (isLearningMode || balancingStrategy === 'RAM')) {
                 const targetStr = `${targetHost}:${targetPort}`;
                 if (!manualRoutes.has(user) || manualRoutes.get(user) !== targetStr) {
                     console.log(`[MASTER] 🧠 Aprendendo Rota: ${user} -> ${targetStr}`);
@@ -337,63 +322,8 @@ if (cluster.isMaster) {
                             // Propaga atualização de RAM para workers imediatamente
                             broadcastConfig();
 
-                            // DESAMBIGUAÇÃO DE USUÁRIOS
-                            const TOLERANCE = 90000; // 90s para evitar trocas erradas entre usuários parecidos
-                            for (const [id, session] of globalSessions.entries()) {
-                                const agentData = agentReports.get(session.targetHost);
-                                if (agentData && agentData.sessions) {
-                                    const truncated = normalizeUsername(session.user);
-                                    if (truncated && truncated !== 'Unknown/New') {
-                                        // Candidatos por comparação robusta (truncado / completo / alias)
-                                        const candidates = agentData.sessions.filter(s =>
-                                            usernamesMatch(s.username, truncated)
-                                        );
-
-                                        if (candidates.length > 0) {
-                                            // Caso inequívoco: único candidato -> atualiza imediatamente
-                                            if (candidates.length === 1) {
-                                                const directMatch = normalizeUsername(candidates[0].username);
-                                                if (truncated !== directMatch) {
-                                                    session.user = directMatch;
-                                                    if (!manualAliases.has(truncated)) {
-                                                        manualAliases.set(truncated, directMatch);
-                                                        saveData();
-                                                    }
-                                                }
-                                                continue;
-                                            }
-
-                                            // Encontra o candidato com loginTime mais próximo do startTime da conexão
-                                            let bestMatch = null;
-                                            let minDiff = Infinity;
-
-                                            for (const cand of candidates) {
-                                                if (!cand.loginTime) continue;
-                                                const diff = Math.abs(session.startTime - cand.loginTime);
-                                                if (diff < minDiff) {
-                                                    minDiff = diff;
-                                                    bestMatch = cand;
-                                                }
-                                            }
-
-                                            // Se o melhor match estiver dentro da tolerância, atualiza
-                                            if (bestMatch && minDiff < TOLERANCE) {
-                                                const matchedName = normalizeUsername(bestMatch.username);
-                                                if (truncated !== matchedName) {
-                                                    // console.log(`[REQ] ${truncated} -> ${bestMatch.username} (Diff: ${minDiff}ms)`);
-                                                    session.user = matchedName;
-
-                                                    // Persistência opcional (pode conflitar se nomes colidirem muito, mas ajuda)
-                                                    if (!manualAliases.has(truncated)) {
-                                                        manualAliases.set(truncated, matchedName);
-                                                        saveData();
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
+                            // Não sobrescreve mais o nome truncado com usernames exportados pelo agent.
+                            // Persistência será feita pelo próprio nome truncado via sticky/manualRoutes.
                         }
                     } catch (e) {
                         // JSON inválido - ignora
@@ -751,55 +681,26 @@ if (pathname === '/') {
                     const cpu = agentData.cpu || 0;
                     const ram = health.ram || agentData.ram || 0;
 
-                    // Lista de Usuários com Status
+                    // Lista de Usuários com Status (baseado nas sessões reais do load para o target)
                     let sessionsHtml = '<span style="color:#999">-</span>';
                     let activeCount = 0;
 
-                    if (agentData.sessions && agentData.sessions.length > 0) {
-                        const liveUsersOnTarget = Array.from(globalSessions.values())
-                            .filter(gs => gs.targetHost === t.host && String(gs.targetPort) === String(t.port))
-                            .map(gs => {
-                                const raw = normalizeUsername(gs.user);
-                                const aliasRaw = manualAliases.get(raw) || manualAliases.get(gs.user);
-                                const aliasCandidates = aliasRaw
-                                    ? aliasRaw.split('/').map(s => normalizeUsername(s)).filter(Boolean)
-                                    : [];
-                                return { raw, aliasCandidates };
-                            });
+                    const liveSessions = Array.from(globalSessions.values())
+                        .filter(gs => gs.targetHost === t.host && String(gs.targetPort) === String(t.port));
 
-                        const sortedSessions = [...agentData.sessions].sort((a, b) => {
-                            const aActive = a.state === 'Active' ? 1 : 0;
-                            const bActive = b.state === 'Active' ? 1 : 0;
-                            return bActive - aActive;
-                        });
-
-                        const liveCount = sortedSessions.filter(s => {
-                            const normalized = normalizeUsername(s.username);
-                            return liveUsersOnTarget.some(live =>
-                                usernamesMatch(normalized, live.raw) ||
-                                live.aliasCandidates.some(alias => usernamesMatch(normalized, alias))
-                            );
-                        }).length;
-                        activeCount = liveCount;
-                        sessionsHtml = sortedSessions.map(s => {
-                            const normalized = normalizeUsername(s.username);
-                            const isLive = liveUsersOnTarget.some(live =>
-                                usernamesMatch(normalized, live.raw) ||
-                                live.aliasCandidates.some(alias => usernamesMatch(normalized, alias))
-                            );
+                    if (liveSessions.length > 0) {
+                        activeCount = liveSessions.length;
+                        sessionsHtml = liveSessions.map(s => {
+                            const normalized = normalizeUsername(s.user);
                             const isPinned = manualRoutes.has(normalized) || manualAliases.has(normalized);
-                            const color = isLive ? '#2ecc71' : (s.state === 'Active' ? '#f39c12' : '#e74c3c');
-                            const icon = isLive ? '🟢' : (s.state === 'Active' ? '🟡' : '🔴');
-                            const badges = `${isLive ? '<span class="tag tag-green" style="font-size:0.7em; margin-left:6px;">LIVE</span>' : '<span class="tag tag-grey" style="font-size:0.7em; margin-left:6px;">AGENT</span>'}${isPinned ? '<span class="tag tag-grey" style="font-size:0.7em; margin-left:4px;">FIXO</span>' : ''}`;
-                            const stateText = s.state === 'Active' ? '' : ' <span style="font-size:0.75em; color:#e74c3c;">(Disc)</span>';
+                            const badges = `${isPinned ? '<span class="tag tag-grey" style="font-size:0.7em; margin-left:6px;">FIXO</span>' : ''}`;
                             return `<div style="margin-bottom:2px; white-space:nowrap;">
-                                            <span style="color:${color}; font-size:0.8em;">${icon}</span> 
-                                            <b>${escapeHtml(normalized)}</b>${stateText}${badges}
+                                            <span style="color:#2ecc71; font-size:0.8em;">🟢</span>
+                                            <b>${escapeHtml(normalized || 'Unknown/New')}</b>${badges}
                                         </div>`;
                         }).join('');
-                        sessionsHtml = `<div style="font-size:0.75em; color:#666; margin-bottom:4px;">LIVE ${liveCount} / AGENT ${sortedSessions.length}</div>${sessionsHtml}`;
                     } else if (agentData.sessions) {
-                        sessionsHtml = '<span style="color:#999">Vazio</span>';
+                        sessionsHtml = '<span style="color:#999">Sem conexões via load</span>';
                     }
 
                     // Formata Uptime
@@ -1234,7 +1135,7 @@ if (pathname === '/') {
                 }
 
                 // AUTO-LEARN
-                if (workerIsLearningMode && username && !isFixed) {
+                if ((workerIsLearningMode || workerBalancingStrategy === 'RAM') && username && !isFixed) {
                     process.send({
                         type: 'CMD_REGISTER_STICKY',
                         user: username,
