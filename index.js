@@ -828,8 +828,8 @@ if (pathname === '/') {
         html += `<tr><td colspan="5" style="text-align:center">Nenhuma conexão ativa.</td></tr>`;
     } else {
         for (const [id, session] of globalSessions.entries()) {
-            const alias = manualAliases.get(session.user) || session.user;
-            const displayName = (alias !== session.user) ? `<b>${escapeHtml(alias)}</b> <small>(${escapeHtml(session.user)})</small>` : `<b>${escapeHtml(session.user)}</b>`;
+            // Exibir exatamente o usuário recebido via mstshash (truncado), sem promover alias.
+            const displayName = `<b>${escapeHtml(session.user)}</b>`;
 
             html += `
                         <tr>
