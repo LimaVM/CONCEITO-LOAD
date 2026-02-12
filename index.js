@@ -50,6 +50,13 @@ const normalizeUsername = (value) => {
     return normalized.trim();
 };
 
+const usernamesMatch = (a, b) => {
+    const left = normalizeUsername(a).toLowerCase();
+    const right = normalizeUsername(b).toLowerCase();
+    if (!left || !right) return false;
+    return left === right || left.startsWith(right) || right.startsWith(left);
+};
+
 // === CLUSTERING ===
 if (cluster.isMaster) {
     const numCPUs = os.cpus().length;
@@ -727,12 +734,16 @@ if (pathname === '/') {
                     let activeCount = 0;
 
                     if (agentData.sessions && agentData.sessions.length > 0) {
-                        const liveUsersOnTarget = new Set(
-                            Array.from(globalSessions.values())
-                                .filter(gs => gs.targetHost === t.host && String(gs.targetPort) === String(t.port))
-                                .map(gs => normalizeUsername(gs.user))
-                                .filter(Boolean)
-                        );
+                        const liveUsersOnTarget = Array.from(globalSessions.values())
+                            .filter(gs => gs.targetHost === t.host && String(gs.targetPort) === String(t.port))
+                            .map(gs => {
+                                const raw = normalizeUsername(gs.user);
+                                const aliasRaw = manualAliases.get(raw) || manualAliases.get(gs.user);
+                                const aliasCandidates = aliasRaw
+                                    ? aliasRaw.split('/').map(s => normalizeUsername(s)).filter(Boolean)
+                                    : [];
+                                return { raw, aliasCandidates };
+                            });
 
                         const sortedSessions = [...agentData.sessions].sort((a, b) => {
                             const aActive = a.state === 'Active' ? 1 : 0;
@@ -740,11 +751,20 @@ if (pathname === '/') {
                             return bActive - aActive;
                         });
 
-                        const liveCount = sortedSessions.filter(s => liveUsersOnTarget.has(normalizeUsername(s.username))).length;
+                        const liveCount = sortedSessions.filter(s => {
+                            const normalized = normalizeUsername(s.username);
+                            return liveUsersOnTarget.some(live =>
+                                usernamesMatch(normalized, live.raw) ||
+                                live.aliasCandidates.some(alias => usernamesMatch(normalized, alias))
+                            );
+                        }).length;
                         activeCount = liveCount;
                         sessionsHtml = sortedSessions.map(s => {
                             const normalized = normalizeUsername(s.username);
-                            const isLive = liveUsersOnTarget.has(normalized);
+                            const isLive = liveUsersOnTarget.some(live =>
+                                usernamesMatch(normalized, live.raw) ||
+                                live.aliasCandidates.some(alias => usernamesMatch(normalized, alias))
+                            );
                             const isPinned = manualRoutes.has(normalized) || manualAliases.has(normalized);
                             const color = isLive ? '#2ecc71' : (s.state === 'Active' ? '#f39c12' : '#e74c3c');
                             const icon = isLive ? '🟢' : (s.state === 'Active' ? '🟡' : '🔴');
