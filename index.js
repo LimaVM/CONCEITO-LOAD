@@ -203,7 +203,7 @@ if (cluster.isMaster) {
         }
         else if (msg.type === 'CMD_REGISTER_STICKY') {
             const { user, targetHost, targetPort } = msg;
-            if (user && targetHost && (isLearningMode || balancingStrategy === 'RAM')) {
+            if (user && targetHost) {
                 const targetStr = `${targetHost}:${targetPort}`;
                 if (!manualRoutes.has(user) || manualRoutes.get(user) !== targetStr) {
                     console.log(`[MASTER] 🧠 Aprendendo Rota: ${user} -> ${targetStr}`);
@@ -691,12 +691,12 @@ if (pathname === '/') {
                     if (liveSessions.length > 0) {
                         activeCount = liveSessions.length;
                         sessionsHtml = liveSessions.map(s => {
-                            const normalized = normalizeUsername(s.user);
-                            const isPinned = manualRoutes.has(normalized) || manualAliases.has(normalized);
+                            const exactUser = String(s.user || '').trim();
+                            const isPinned = manualRoutes.has(exactUser) || manualAliases.has(exactUser);
                             const badges = `${isPinned ? '<span class="tag tag-grey" style="font-size:0.7em; margin-left:6px;">FIXO</span>' : ''}`;
                             return `<div style="margin-bottom:2px; white-space:nowrap;">
                                             <span style="color:#2ecc71; font-size:0.8em;">🟢</span>
-                                            <b>${escapeHtml(normalized || 'Unknown/New')}</b>${badges}
+                                            <b>${escapeHtml(exactUser || 'Unknown/New')}</b>${badges}
                                         </div>`;
                         }).join('');
                     } else if (agentData.sessions) {
@@ -1063,17 +1063,9 @@ if (pathname === '/') {
                 let username = null;
 
                 if (match && match[1]) {
-                    let raw = match[1].trim();
-                    // Remove domínio (DOMINIO\usuario → usuario)
-                    if (raw.includes('\\')) {
-                        raw = raw.split('\\').pop();
-                    }
-                    // Remove domínio formato UPN (usuario@dominio → usuario)
-                    if (raw.includes('@')) {
-                        raw = raw.split('@')[0];
-                    }
-                    if (raw.length > 0) {
-                        username = raw;
+                    const rawMstshash = match[1].trim();
+                    if (rawMstshash.length > 0) {
+                        username = rawMstshash;
                     }
                 }
 
@@ -1135,7 +1127,7 @@ if (pathname === '/') {
                 }
 
                 // AUTO-LEARN
-                if ((workerIsLearningMode || workerBalancingStrategy === 'RAM') && username && !isFixed) {
+                if (username && !isFixed) {
                     process.send({
                         type: 'CMD_REGISTER_STICKY',
                         user: username,
@@ -1145,7 +1137,7 @@ if (pathname === '/') {
                 }
 
                 userInfo = {
-                    user: normalizeUsername(username) || 'Unknown/New',
+                    user: username || 'Unknown/New',
                     clientIp: clientIp,
                     targetHost: target.host,
                     targetPort: target.port,
