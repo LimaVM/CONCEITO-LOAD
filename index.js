@@ -329,19 +329,32 @@ if (cluster.isMaster) {
                             // Propaga atualização de RAM para workers imediatamente
                             broadcastConfig();
 
-                            // DESAMBIGUAÇÃO DE USUÁRIOS (Time-Based)
-                            const TOLERANCE = 60000; // 60s
+                            // DESAMBIGUAÇÃO DE USUÁRIOS
+                            const TOLERANCE = 300000; // 5 min (reconexões podem herdar loginTime antigo)
                             for (const [id, session] of globalSessions.entries()) {
                                 const agentData = agentReports.get(session.targetHost);
                                 if (agentData && agentData.sessions) {
-                                    const truncated = session.user;
+                                    const truncated = normalizeUsername(session.user);
                                     if (truncated && truncated !== 'Unknown/New') {
-                                        // Encontra todos os candidatos que começam com o nome truncado
+                                        // Candidatos por comparação robusta (truncado / completo / alias)
                                         const candidates = agentData.sessions.filter(s =>
-                                            s.username.toLowerCase().startsWith(truncated.toLowerCase())
+                                            usernamesMatch(s.username, truncated)
                                         );
 
                                         if (candidates.length > 0) {
+                                            // Caso inequívoco: único candidato -> atualiza imediatamente
+                                            if (candidates.length === 1) {
+                                                const directMatch = normalizeUsername(candidates[0].username);
+                                                if (truncated !== directMatch) {
+                                                    session.user = directMatch;
+                                                    if (!manualAliases.has(truncated)) {
+                                                        manualAliases.set(truncated, directMatch);
+                                                        saveData();
+                                                    }
+                                                }
+                                                continue;
+                                            }
+
                                             // Encontra o candidato com loginTime mais próximo do startTime da conexão
                                             let bestMatch = null;
                                             let minDiff = Infinity;
@@ -357,13 +370,14 @@ if (cluster.isMaster) {
 
                                             // Se o melhor match estiver dentro da tolerância, atualiza
                                             if (bestMatch && minDiff < TOLERANCE) {
-                                                if (session.user !== bestMatch.username) {
+                                                const matchedName = normalizeUsername(bestMatch.username);
+                                                if (truncated !== matchedName) {
                                                     // console.log(`[REQ] ${truncated} -> ${bestMatch.username} (Diff: ${minDiff}ms)`);
-                                                    session.user = bestMatch.username;
+                                                    session.user = matchedName;
 
                                                     // Persistência opcional (pode conflitar se nomes colidirem muito, mas ajuda)
                                                     if (!manualAliases.has(truncated)) {
-                                                        manualAliases.set(truncated, bestMatch.username);
+                                                        manualAliases.set(truncated, matchedName);
                                                         saveData();
                                                     }
                                                 }
