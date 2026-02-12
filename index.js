@@ -722,30 +722,38 @@ if (pathname === '/') {
                     const cpu = agentData.cpu || 0;
                     const ram = health.ram || agentData.ram || 0;
 
-                    // Lista de Usuários com Status (Filtrando Apenas Gerenciados)
+                    // Lista de Usuários com Status
                     let sessionsHtml = '<span style="color:#999">-</span>';
                     let activeCount = 0;
 
                     if (agentData.sessions && agentData.sessions.length > 0) {
-                        // Filtra: Só mostra se estiver em manualRoutes, manualAliases ou for uma sessão conhecida
-                        const managedSessions = agentData.sessions.filter(s => {
-                            return manualRoutes.has(s.username) || manualAliases.has(s.username) || globalSessions.has(s.sessionId);
+                        const liveUsersOnTarget = new Set(
+                            Array.from(globalSessions.values())
+                                .filter(gs => gs.targetHost === t.host && String(gs.targetPort) === String(t.port))
+                                .map(gs => normalizeUsername(gs.user))
+                                .filter(Boolean)
+                        );
+
+                        const sortedSessions = [...agentData.sessions].sort((a, b) => {
+                            const aActive = a.state === 'Active' ? 1 : 0;
+                            const bActive = b.state === 'Active' ? 1 : 0;
+                            return bActive - aActive;
                         });
 
-                        if (managedSessions.length > 0) {
-                            activeCount = managedSessions.length;
-                            sessionsHtml = managedSessions.map(s => {
-                                const color = s.state === 'Active' ? '#2ecc71' : '#e74c3c';
-                                const icon = s.state === 'Active' ? '🟢' : '🔴';
-                                const stateText = s.state === 'Active' ? '' : ' <span style="font-size:0.75em; color:#e74c3c;">(Disc)</span>';
-                                return `<div style="margin-bottom:2px; white-space:nowrap;">
+                        activeCount = sortedSessions.length;
+                        sessionsHtml = sortedSessions.map(s => {
+                            const normalized = normalizeUsername(s.username);
+                            const isLive = liveUsersOnTarget.has(normalized);
+                            const isPinned = manualRoutes.has(normalized) || manualAliases.has(normalized);
+                            const color = s.state === 'Active' ? '#2ecc71' : '#e74c3c';
+                            const icon = s.state === 'Active' ? '🟢' : '🔴';
+                            const badges = `${isLive ? '<span class="tag tag-green" style="font-size:0.7em; margin-left:6px;">LIVE</span>' : ''}${isPinned ? '<span class="tag tag-grey" style="font-size:0.7em; margin-left:4px;">FIXO</span>' : ''}`;
+                            const stateText = s.state === 'Active' ? '' : ' <span style="font-size:0.75em; color:#e74c3c;">(Disc)</span>';
+                            return `<div style="margin-bottom:2px; white-space:nowrap;">
                                             <span style="color:${color}; font-size:0.8em;">${icon}</span> 
-                                            <b>${escapeHtml(s.username)}</b>${stateText}
+                                            <b>${escapeHtml(normalized)}</b>${stateText}${badges}
                                         </div>`;
-                            }).join('');
-                        } else {
-                            sessionsHtml = '<span style="color:#999">Nenhum Gerenciado</span>';
-                        }
+                        }).join('');
                     } else if (agentData.sessions) {
                         sessionsHtml = '<span style="color:#999">Vazio</span>';
                     }
