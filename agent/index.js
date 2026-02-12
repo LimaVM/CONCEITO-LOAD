@@ -42,6 +42,14 @@ const addLog = (msg) => {
     console.log(entry);
 };
 
+const normalizeUsername = (value) => {
+    if (!value) return '';
+    let normalized = String(value).trim();
+    if (normalized.includes('\\')) normalized = normalized.split('\\').pop();
+    if (normalized.includes('@')) normalized = normalized.split('@')[0];
+    return normalized.trim();
+};
+
 // IP local deste servidor
 const getLocalIPs = () => {
     const interfaces = os.networkInterfaces();
@@ -116,7 +124,7 @@ const getActiveSessions = () => {
             if (!line.trim()) continue;
 
             const sessionName = line.substring(1, 19).trim();
-            const username = line.substring(19, 41).trim();
+            const username = normalizeUsername(line.substring(19, 41).trim());
             const idStr = line.substring(41, 46).trim();
             const state = line.substring(46, 54).trim();
             const sessionId = parseInt(idStr) || 0;

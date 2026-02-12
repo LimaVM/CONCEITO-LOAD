@@ -42,6 +42,14 @@ const escapeHtml = (str) => {
         .replace(/'/g, '&#39;');
 };
 
+const normalizeUsername = (value) => {
+    if (!value) return '';
+    let normalized = String(value).trim();
+    if (normalized.includes('\\')) normalized = normalized.split('\\').pop();
+    if (normalized.includes('@')) normalized = normalized.split('@')[0];
+    return normalized.trim();
+};
+
 // === CLUSTERING ===
 if (cluster.isMaster) {
     const numCPUs = os.cpus().length;
@@ -282,11 +290,16 @@ if (cluster.isMaster) {
                     try {
                         const report = JSON.parse(body);
                         if (report.serverIPs && Array.isArray(report.sessions)) {
+                            const normalizedSessions = report.sessions.map((session) => ({
+                                ...session,
+                                username: normalizeUsername(session.username)
+                            }));
+
                             // Armazena report e ATUALIZA RAM no serverHealth
                             report.serverIPs.forEach(ip => {
                                 agentReports.set(ip, {
                                     serverId: report.serverId,
-                                    sessions: report.sessions,
+                                    sessions: normalizedSessions,
                                     cpu: report.cpuUsage || 0,
                                     uptime: report.uptime || 0,
                                     ram: report.ramUsage || 0,
@@ -383,9 +396,10 @@ if (cluster.isMaster) {
                 }
                 else if (pathname === '/api/route') {
                     const { username, target } = post;
-                    if (username && target) {
-                        if (target === 'CLEAR') manualRoutes.delete(username);
-                        else manualRoutes.set(username, target);
+                    const normalizedUser = normalizeUsername(username);
+                    if (normalizedUser && target) {
+                        if (target === 'CLEAR') manualRoutes.delete(normalizedUser);
+                        else manualRoutes.set(normalizedUser, target);
                         saveData();
                         broadcastConfig();
                     }
@@ -408,9 +422,11 @@ if (cluster.isMaster) {
                 }
                 else if (pathname === '/api/alias') {
                     const { rawName, fullName } = post;
-                    if (rawName && fullName) {
-                        if (fullName === 'CLEAR') manualAliases.delete(rawName);
-                        else manualAliases.set(rawName, fullName);
+                    const normalizedRaw = normalizeUsername(rawName);
+                    const normalizedFull = normalizeUsername(fullName);
+                    if (normalizedRaw && fullName) {
+                        if (fullName === 'CLEAR') manualAliases.delete(normalizedRaw);
+                        else manualAliases.set(normalizedRaw, normalizedFull || normalizedRaw);
                         saveData();
                     }
                 }
@@ -482,10 +498,10 @@ if (cluster.isMaster) {
                             broadcastConfig();
 
                             // Matar conexões instaneamente (Case Insensitive e Robustez)
-                            const bannedLower = user.toLowerCase();
+                            const bannedLower = normalizeUsername(user).toLowerCase();
 
                             for (const [id, session] of globalSessions.entries()) {
-                                const sUser = (session.user || '').toLowerCase();
+                                const sUser = normalizeUsername(session.user).toLowerCase();
 
                                 // Busca alias case-insensitive
                                 let sFull = sUser;
@@ -1176,7 +1192,7 @@ if (pathname === '/') {
                 }
 
                 userInfo = {
-                    user: username || 'Unknown/New',
+                    user: normalizeUsername(username) || 'Unknown/New',
                     clientIp: clientIp,
                     targetHost: target.host,
                     targetPort: target.port,
