@@ -1,6 +1,5 @@
 require('dotenv').config();
 const net = require('net');
-const { pipeline } = require('stream');
 const cluster = require('cluster');
 const os = require('os');
 const http = require('http');
@@ -112,7 +111,9 @@ if (cluster.isMaster) {
                 blacklistedUsers: Array.from(blacklistedUsers),
                 isLearningMode
             };
-            fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
+            const tempFile = `${DATA_FILE}.tmp`;
+            fs.writeFileSync(tempFile, JSON.stringify(data, null, 2));
+            fs.renameSync(tempFile, DATA_FILE);
         } catch (e) {
             console.error('[MASTER] Erro ao salvar dados:', e.message);
         }
@@ -254,14 +255,20 @@ if (cluster.isMaster) {
 
     // === SERVIDOR DASHBOARD & API (MASTER) ===
     http.createServer((req, res) => {
+        const requestUrl = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+        const pathname = requestUrl.pathname;
+        res.setHeader('X-Content-Type-Options', 'nosniff');
+        res.setHeader('X-Frame-Options', 'DENY');
+        res.setHeader('Referrer-Policy', 'no-referrer');
+
         // Middleware de Autenticação para APIs
-        if (req.url.startsWith('/api/')) {
-            const apiKey = req.headers['x-api-key'] || new URLSearchParams(req.url.split('?')[1]).get('key');
+        if (pathname.startsWith('/api/') && req.method !== 'POST') {
+            const apiKey = req.headers['x-api-key'] || requestUrl.searchParams.get('key');
             if (API_SECRET && apiKey !== API_SECRET) {
                 // Acesso negado
                 res.writeHead(403, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ error: 'Forbidden: Invalid API Key' }));
-                console.log(`[MASTER] 🛡️ Acesso bloqueado à API ${req.url} (IP desconhecido)`);
+                console.log(`[MASTER] 🛡️ Acesso bloqueado à API ${pathname} (IP desconhecido)`);
                 return;
             }
         }
@@ -271,7 +278,7 @@ if (cluster.isMaster) {
             req.on('data', chunk => { body += chunk.toString(); });
             req.on('end', () => {
                 // === AGENT REPORT (JSON) ===
-                if (req.url === '/api/agent-report') {
+                if (pathname === '/api/agent-report') {
                     try {
                         const report = JSON.parse(body);
                         if (report.serverIPs && Array.isArray(report.sessions)) {
@@ -360,14 +367,21 @@ if (cluster.isMaster) {
 
                 const post = querystring.parse(body);
 
-                if (req.url === '/api/kill') {
+                const postedApiKey = post.key;
+                if (pathname.startsWith('/api/') && API_SECRET && postedApiKey !== API_SECRET && !requestUrl.searchParams.get('key') && !req.headers['x-api-key']) {
+                    res.writeHead(403, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ error: 'Forbidden: Invalid API Key' }));
+                    return;
+                }
+
+                if (pathname === '/api/kill') {
                     const { connectionId, workerId } = post;
                     if (cluster.workers[workerId]) {
                         cluster.workers[workerId].send({ type: 'CMD_KILL', connectionId });
                     }
                     globalSessions.delete(connectionId);
                 }
-                else if (req.url === '/api/route') {
+                else if (pathname === '/api/route') {
                     const { username, target } = post;
                     if (username && target) {
                         if (target === 'CLEAR') manualRoutes.delete(username);
@@ -376,7 +390,7 @@ if (cluster.isMaster) {
                         broadcastConfig();
                     }
                 }
-                else if (req.url === '/api/weight') {
+                else if (pathname === '/api/weight') {
                     const { target, weight } = post;
                     if (target && weight) {
                         serverWeights.set(target, parseInt(weight));
@@ -384,15 +398,15 @@ if (cluster.isMaster) {
                         broadcastConfig();
                     }
                 }
-                else if (req.url === '/api/strategy') {
+                else if (pathname === '/api/strategy') {
                     const { strategy } = post;
-                    if (strategy === 'NAME' || strategy === 'IP' || strategy === 'HYBRID') {
+                    if (strategy === 'NAME' || strategy === 'IP' || strategy === 'HYBRID' || strategy === 'RAM') {
                         balancingStrategy = strategy;
                         saveData();
                         broadcastConfig();
                     }
                 }
-                else if (req.url === '/api/alias') {
+                else if (pathname === '/api/alias') {
                     const { rawName, fullName } = post;
                     if (rawName && fullName) {
                         if (fullName === 'CLEAR') manualAliases.delete(rawName);
@@ -400,7 +414,7 @@ if (cluster.isMaster) {
                         saveData();
                     }
                 }
-                else if (req.url === '/api/bulk-alias') {
+                else if (pathname === '/api/bulk-alias') {
                     const { userList } = post;
                     if (userList) {
                         const lines = userList.split(/\r?\n/);
@@ -426,7 +440,7 @@ if (cluster.isMaster) {
                         console.log(`[MASTER] Importados ${count} aliases.`);
                     }
                 }
-                else if (req.url === '/api/blacklist') {
+                else if (pathname === '/api/blacklist') {
                     const { ip, user, action } = post;
                     if (action === 'UNBLOCK_IP' && ip) {
                         blacklistedIPs.delete(ip);
@@ -453,7 +467,7 @@ if (cluster.isMaster) {
 
                             // Matar conexões instaneamente
                             for (const [id, session] of globalSessions.entries()) {
-                                if (session.ip === ip) {
+                                if (session.clientIp === ip) {
                                     if (cluster.workers[session.workerId]) {
                                         cluster.workers[session.workerId].send({ type: 'CMD_KILL', connectionId: id });
                                     }
@@ -490,29 +504,27 @@ if (cluster.isMaster) {
                                     globalSessions.delete(id);
                                 }
                             }
-                            globalSessions.delete(id);
                         }
                     }
+                    else if (action === 'CLEAR_SUSPICIOUS') {
+                        suspiciousActivity.clear();
+                    }
                 }
-            } else if (action === 'CLEAR_SUSPICIOUS') {
-                suspiciousActivity.clear();
-            }
-        }
-        else if (req.url === '/api/learning-mode') {
+                else if (pathname === '/api/learning-mode') {
             const { enabled } = post;
             isLearningMode = (enabled === 'on');
             saveData();
             broadcastConfig();
+                }
+
+                res.writeHead(302, { 'Location': '/' });
+                res.end();
+            });
+            return;
         }
 
-        res.writeHead(302, { 'Location': '/' });
-        res.end();
-    });
-    return;
-}
-
 // === API GET: Status dos Agents ===
-if (req.url === '/api/agents') {
+if (pathname === '/api/agents') {
     const agents = {};
     for (const [ip, data] of agentReports.entries()) {
         agents[ip] = {
@@ -527,7 +539,7 @@ if (req.url === '/api/agents') {
     return;
 }
 
-if (req.url === '/') {
+if (pathname === '/') {
     let html = `
             <!DOCTYPE html>
             <html lang="pt-br">
@@ -574,7 +586,7 @@ if (req.url === '/') {
 
                      <div class="card" style="border: 2px solid #8e44ad;">
                         <h2>🧠 Persistência Inteligente (Modo Aprendizado)</h2>
-                        <form action="/api/learning-mode?key=${API_SECRET}" method="POST">
+                        <form action="/api/learning-mode" method="POST"><input type="hidden" name="key" value="${escapeHtml(API_SECRET || '')}">
                             <label class="switch-label">
                                 <input type="checkbox" name="enabled" ${isLearningMode ? 'checked' : ''} onchange="this.form.submit()">
                                 ${isLearningMode ? '<span class="switch-on">ATIVADO (Gravando Rotas Automaticamente)</span>' : '<span class="switch-off">DESATIVADO (Apenas Rotas Manuais)</span>'}
@@ -589,7 +601,7 @@ if (req.url === '/') {
                             <!-- IPS -->
                             <div style="flex:1; min-width:300px;">
                                 <h3>🚫 IPs Banidos</h3>
-                                <form action="/api/blacklist?key=${API_SECRET}" method="POST" class="form-inline" style="background:#fff0f0; padding:5px; border-radius:4px;">
+                                <form action="/api/blacklist" method="POST" class="form-inline" style="background:#fff0f0; padding:5px; border-radius:4px;"><input type="hidden" name="key" value="${escapeHtml(API_SECRET || '')}">
                                     <input type="text" name="ip" placeholder="Banir IP Manualmente" required>
                                     <input type="hidden" name="action" value="MANUAL_BAN_IP">
                                     <button type="submit" class="btn btn-red">Banir IP</button>
@@ -597,13 +609,13 @@ if (req.url === '/') {
                                 <div style="max-height: 100px; overflow-y: auto; background: #f9f9f9; padding: 10px; border: 1px solid #ddd;">
                                      ${Array.from(blacklistedIPs).map(ip => `<span>${escapeHtml(ip)}</span><br>`).join('') || 'Nenhum.'}
                                 </div>
-                                <form action="/api/blacklist?key=${API_SECRET}" method="POST" style="margin-top:5px"><input type="hidden" name="action" value="CLEAR_IPS"><button class="btn btn-blue" style="font-size:0.8em">Limpar IPs</button></form>
+                                <form action="/api/blacklist" method="POST" style="margin-top:5px"><input type="hidden" name="key" value="${escapeHtml(API_SECRET || '')}"><input type="hidden" name="action" value="CLEAR_IPS"><button class="btn btn-blue" style="font-size:0.8em">Limpar IPs</button></form>
                             </div>
 
                             <!-- USERS -->
                             <div style="flex:1; min-width:300px;">
                                 <h3>☠️ Usuários Envenenados</h3>
-                                <form action="/api/blacklist?key=${API_SECRET}" method="POST" class="form-inline" style="background:#fff0f0; padding:5px; border-radius:4px;">
+                                <form action="/api/blacklist" method="POST" class="form-inline" style="background:#fff0f0; padding:5px; border-radius:4px;"><input type="hidden" name="key" value="${escapeHtml(API_SECRET || '')}">
                                     <input type="text" name="user" placeholder="Banir Nome Manualmente" required>
                                     <input type="hidden" name="action" value="MANUAL_BAN_USER">
                                     <button type="submit" class="btn btn-red">Banir Nome</button>
@@ -611,7 +623,7 @@ if (req.url === '/') {
                                 <div style="max-height: 100px; overflow-y: auto; background: #f9f9f9; padding: 10px; border: 1px solid #ddd;">
                                      ${Array.from(blacklistedUsers).map(u => `<span><b>${escapeHtml(u)}</b></span><br>`).join('') || 'Nenhum.'}
                                 </div>
-                                <form action="/api/blacklist?key=${API_SECRET}" method="POST" style="margin-top:5px"><input type="hidden" name="action" value="CLEAR_USERS"><button class="btn btn-blue" style="font-size:0.8em">Limpar Users</button></form>
+                                <form action="/api/blacklist" method="POST" style="margin-top:5px"><input type="hidden" name="key" value="${escapeHtml(API_SECRET || '')}"><input type="hidden" name="action" value="CLEAR_USERS"><button class="btn btn-blue" style="font-size:0.8em">Limpar Users</button></form>
                             </div>
                         </div>
                     </div>
@@ -635,19 +647,19 @@ if (req.url === '/') {
                             <td><b>${a.count}</b></td>
                             <td>${ago}s atrás</td>
                             <td style="display:flex; gap:4px;">
-                                ${a.ip !== 'N/A' ? `<form action="/api/blacklist?key=${API_SECRET}" method="POST" style="margin:0"><input type="hidden" name="ip" value="${escapeHtml(a.ip)}"><input type="hidden" name="action" value="MANUAL_BAN_IP"><button type="submit" class="btn btn-red" style="font-size:0.7em;padding:2px 6px">Ban IP</button></form>` : ''}
-                                ${a.user !== 'N/A' ? `<form action="/api/blacklist?key=${API_SECRET}" method="POST" style="margin:0"><input type="hidden" name="user" value="${escapeHtml(a.user)}"><input type="hidden" name="action" value="MANUAL_BAN_USER"><button type="submit" class="btn btn-red" style="font-size:0.7em;padding:2px 6px">Ban User</button></form>` : ''}
+                                ${a.ip !== 'N/A' ? `<form action="/api/blacklist" method="POST" style="margin:0"><input type="hidden" name="key" value="${escapeHtml(API_SECRET || '')}"><input type="hidden" name="ip" value="${escapeHtml(a.ip)}"><input type="hidden" name="action" value="MANUAL_BAN_IP"><button type="submit" class="btn btn-red" style="font-size:0.7em;padding:2px 6px">Ban IP</button></form>` : ''}
+                                ${a.user !== 'N/A' ? `<form action="/api/blacklist" method="POST" style="margin:0"><input type="hidden" name="key" value="${escapeHtml(API_SECRET || '')}"><input type="hidden" name="user" value="${escapeHtml(a.user)}"><input type="hidden" name="action" value="MANUAL_BAN_USER"><button type="submit" class="btn btn-red" style="font-size:0.7em;padding:2px 6px">Ban User</button></form>` : ''}
                             </td>
                         </tr>`;
                 }).join('')}
                             </tbody>
                         </table>
-                        <form action="/api/blacklist?key=${API_SECRET}" method="POST" style="margin-top:10px"><input type="hidden" name="action" value="CLEAR_SUSPICIOUS"><button class="btn btn-blue" style="font-size:0.8em">Limpar Histórico</button></form>
+                        <form action="/api/blacklist" method="POST" style="margin-top:10px"><input type="hidden" name="key" value="${escapeHtml(API_SECRET || '')}"><input type="hidden" name="action" value="CLEAR_SUSPICIOUS"><button class="btn btn-blue" style="font-size:0.8em">Limpar Histórico</button></form>
                     </div>
 
                      <div class="card" style="border: 2px solid #3498db;">
                         <h2>⚙️ Estratégia de Balanceamento</h2>
-                        <form action="/api/strategy?key=${API_SECRET}" method="POST" class="form-inline">
+                        <form action="/api/strategy" method="POST" class="form-inline"><input type="hidden" name="key" value="${escapeHtml(API_SECRET || '')}">
                             <label style="margin-right: 15px; cursor: pointer;">
                                 <input type="radio" name="strategy" value="NAME" ${balancingStrategy === 'NAME' ? 'checked' : ''}>
                                 <b>Por Nome (Padrão)</b>
@@ -778,7 +790,7 @@ if (req.url === '/') {
                                         <td style="padding:10px; font-size:0.9em;">${uptimeStr}</td>
                                         <td style="padding:10px; font-size:0.9em;">${lastReportStr}</td>
                                         <td style="padding:10px;">
-                                            <form action="/api/weight?key=${API_SECRET}" method="POST" class="form-inline" style="margin:0;">
+                                            <form action="/api/weight" method="POST" class="form-inline" style="margin:0;"><input type="hidden" name="key" value="${escapeHtml(API_SECRET || '')}">
                                                 <input type="hidden" name="target" value="${key}">
                                                 <input type="number" name="weight" value="${w}" min="0" style="width: 50px; padding:4px;">
                                                 <button type="submit" class="btn btn-blue" style="padding:4px 8px; font-size:0.8em;">ok</button>
@@ -795,14 +807,14 @@ if (req.url === '/') {
                         <div style="display: flex; gap: 20px; flex-wrap: wrap;">
                             <div style="flex: 1; min-width: 300px; background: #f9f9f9; padding: 10px; border-radius: 5px;">
                                 <h3>Apelido em Massa</h3>
-                                <form action="/api/bulk-alias?key=${API_SECRET}" method="POST">
+                                <form action="/api/bulk-alias" method="POST"><input type="hidden" name="key" value="${escapeHtml(API_SECRET || '')}">
                                     <textarea name="userList" rows="3" style="width: 100%;" placeholder="Cole lista..."></textarea>
                                     <button type="submit" class="btn btn-blue">Importar</button>
                                 </form>
                             </div>
                             <div style="flex: 1; min-width: 300px; background: #f9f9f9; padding: 10px; border-radius: 5px;">
                                 <h3>Rota Fixa</h3>
-                                <form action="/api/route?key=${API_SECRET}" method="POST" class="form-inline">
+                                <form action="/api/route" method="POST" class="form-inline"><input type="hidden" name="key" value="${escapeHtml(API_SECRET || '')}">
                                     <input type="text" name="username" placeholder="Usuário" required style="width:100px">
                                     <select name="target">
                                         <option value="CLEAR">-- Remover --</option>
@@ -815,7 +827,7 @@ if (req.url === '/') {
                                         ${Array.from(manualRoutes.entries()).map(([u, t]) => `
                                             <li style="margin-bottom:5px; border-bottom:1px solid #ccc; padding:2px; display:flex; justify-content:space-between; align-items:center;">
                                                 <span><b>${escapeHtml(u)}</b> -> ${escapeHtml(t)}</span>
-                                                <form action="/api/route?key=${API_SECRET}" method="POST" style="margin:0;">
+                                                <form action="/api/route" method="POST" style="margin:0;"><input type="hidden" name="key" value="${escapeHtml(API_SECRET || '')}">
                                                     <input type="hidden" name="username" value="${escapeHtml(u)}">
                                                     <input type="hidden" name="target" value="CLEAR">
                                                     <button type="submit" class="btn btn-red" style="font-size:0.7em; padding:2px 6px;">X</button>
@@ -857,7 +869,7 @@ if (req.url === '/') {
                             <td>${escapeHtml(session.targetHost)}:${escapeHtml(session.targetPort)}</td>
                             <td>${Math.floor((Date.now() - session.startTime) / 1000)}s</td>
                             <td>
-                                <form action="/api/kill?key=${API_SECRET}" method="POST" style="display:inline">
+                                <form action="/api/kill" method="POST" style="display:inline"><input type="hidden" name="key" value="${escapeHtml(API_SECRET || '')}">
                                     <input type="hidden" name="connectionId" value="${id}">
                                     <input type="hidden" name="workerId" value="${session.workerId}">
                                     <button type="submit" class="btn btn-red">KILL</button>
@@ -953,6 +965,11 @@ if (req.url === '/') {
         });
     };
 
+    const normalizeIp = (ip) => {
+        if (!ip) return ip;
+        return ip.startsWith('::ffff:') ? ip.slice(7) : ip;
+    };
+
     // Função de hash para sticky sessions
     const hashString = (str) => {
         let hash = 5381;
@@ -1034,7 +1051,7 @@ if (req.url === '/') {
             clientSocket.setNoDelay(true);
             clientSocket.setKeepAlive(true, 5000);
 
-            const clientIp = clientSocket.remoteAddress;
+            const clientIp = normalizeIp(clientSocket.remoteAddress);
 
             // Timeout se cliente não enviar dados iniciais
             clientSocket.setTimeout(INITIAL_DATA_TIMEOUT);
