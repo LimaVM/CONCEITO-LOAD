@@ -54,7 +54,15 @@ const usernamesMatch = (a, b) => {
     const left = normalizeUsername(a).toLowerCase();
     const right = normalizeUsername(b).toLowerCase();
     if (!left || !right) return false;
-    return left === right || left.startsWith(right) || right.startsWith(left);
+    if (left === right) return true;
+
+    const longer = left.length >= right.length ? left : right;
+    const shorter = left.length >= right.length ? right : left;
+
+    // Só aceita match por truncamento quando o prefixo é minimamente confiável.
+    // Evita colidir usuários curtos (ex: "adm") e reduzir falsos positivos.
+    if (shorter.length < 6) return false;
+    return longer.startsWith(shorter);
 };
 
 // === CLUSTERING ===
@@ -330,7 +338,7 @@ if (cluster.isMaster) {
                             broadcastConfig();
 
                             // DESAMBIGUAÇÃO DE USUÁRIOS
-                            const TOLERANCE = 300000; // 5 min (reconexões podem herdar loginTime antigo)
+                            const TOLERANCE = 90000; // 90s para evitar trocas erradas entre usuários parecidos
                             for (const [id, session] of globalSessions.entries()) {
                                 const agentData = agentReports.get(session.targetHost);
                                 if (agentData && agentData.sessions) {
