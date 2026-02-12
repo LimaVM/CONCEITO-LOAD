@@ -740,20 +740,22 @@ if (pathname === '/') {
                             return bActive - aActive;
                         });
 
-                        activeCount = sortedSessions.length;
+                        const liveCount = sortedSessions.filter(s => liveUsersOnTarget.has(normalizeUsername(s.username))).length;
+                        activeCount = liveCount;
                         sessionsHtml = sortedSessions.map(s => {
                             const normalized = normalizeUsername(s.username);
                             const isLive = liveUsersOnTarget.has(normalized);
                             const isPinned = manualRoutes.has(normalized) || manualAliases.has(normalized);
-                            const color = s.state === 'Active' ? '#2ecc71' : '#e74c3c';
-                            const icon = s.state === 'Active' ? '🟢' : '🔴';
-                            const badges = `${isLive ? '<span class="tag tag-green" style="font-size:0.7em; margin-left:6px;">LIVE</span>' : ''}${isPinned ? '<span class="tag tag-grey" style="font-size:0.7em; margin-left:4px;">FIXO</span>' : ''}`;
+                            const color = isLive ? '#2ecc71' : (s.state === 'Active' ? '#f39c12' : '#e74c3c');
+                            const icon = isLive ? '🟢' : (s.state === 'Active' ? '🟡' : '🔴');
+                            const badges = `${isLive ? '<span class="tag tag-green" style="font-size:0.7em; margin-left:6px;">LIVE</span>' : '<span class="tag tag-grey" style="font-size:0.7em; margin-left:6px;">AGENT</span>'}${isPinned ? '<span class="tag tag-grey" style="font-size:0.7em; margin-left:4px;">FIXO</span>' : ''}`;
                             const stateText = s.state === 'Active' ? '' : ' <span style="font-size:0.75em; color:#e74c3c;">(Disc)</span>';
                             return `<div style="margin-bottom:2px; white-space:nowrap;">
                                             <span style="color:${color}; font-size:0.8em;">${icon}</span> 
                                             <b>${escapeHtml(normalized)}</b>${stateText}${badges}
                                         </div>`;
                         }).join('');
+                        sessionsHtml = `<div style="font-size:0.75em; color:#666; margin-bottom:4px;">LIVE ${liveCount} / AGENT ${sortedSessions.length}</div>${sessionsHtml}`;
                     } else if (agentData.sessions) {
                         sessionsHtml = '<span style="color:#999">Vazio</span>';
                     }
